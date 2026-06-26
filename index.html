@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>持仓今日盈亏</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; background: #f5f5f7; color: #1d1d1f; padding: 20px; min-height: 100vh; }
+  .container { max-width: 560px; margin: 40px auto 0; }
+  .card { background: white; border-radius: 12px; padding: 28px; box-shadow: 0 2px 8px rgba(0,0,0,0.04); margin-bottom: 16px; }
+  .label { color: #888; font-size: 13px; margin-bottom: 10px; }
+  .pnl { font-size: 56px; font-weight: 600; line-height: 1.1; font-variant-numeric: tabular-nums; letter-spacing: -1px; }
+  .pnl-unit { font-size: 24px; font-weight: 500; margin-left: 4px; opacity: 0.7; }
+  .meta { color: #999; font-size: 12px; margin-top: 14px; }
+  .red { color: #ff4d4f; }
+  .green { color: #00a86b; }
+  .indices { padding: 20px 0 12px; }
+  .indices .label { padding: 0 24px 4px; }
+  .index-row { display: flex; align-items: baseline; padding: 10px 24px; gap: 12px; }
+  .index-row + .index-row { border-top: 1px solid #f5f5f5; }
+  .index-name { flex: 1; font-size: 14px; color: #333; font-weight: 500; }
+  .index-price { font-size: 14px; font-variant-numeric: tabular-nums; color: #666; min-width: 80px; text-align: right; }
+  .index-pct { font-size: 14px; font-variant-numeric: tabular-nums; min-width: 70px; text-align: right; font-weight: 600; }
+  .footer { text-align: center; color: #bbb; font-size: 11px; margin-top: 8px; }
+  @media (max-width: 600px) {
+    body { padding: 12px; }
+    .container { margin-top: 8px; }
+    .card { padding: 20px; }
+    .pnl { font-size: 42px; }
+    .pnl-unit { font-size: 20px; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="card">
+    <div class="label">持仓今日盈亏</div>
+    <div class="pnl" id="pnl">--</div>
+    <div class="meta" id="meta">加载中...</div>
+  </div>
+  <div class="card indices">
+    <div class="label">A股三大指数</div>
+    <div id="indices"></div>
+  </div>
+  <div class="footer">行情来源：腾讯财经 · 仅供参考</div>
+</div>
+<script>
+// === 持仓配置（编辑这里即可） ===
+const STOCKS = [
+  { code: '300223', shares: 500 },
+  { code: '300456', shares: 3500 },
+  { code: '300475', shares: 600 },
+];
+
+const INDICES = [
+  { sym: 'sh000001', name: '上证指数' },
+  { sym: 'sz399001', name: '深证成指' },
+  { sym: 'sz399006', name: '创业板指' },
+];
+
+const REFRESH_MS = 3000;
+// =================================
+
+function codeToSym(code) {
+  const f = code[0];
+  return ((f === '6' || f === '5' || f === '9') ? 'sh' : 'sz') + code;
+}
+
+function loadScript(url, charset) {
+  return new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    if (charset) { try { script.charset = charset; } catch (e) {} }
+    const timeout = setTimeout(() => { cleanup(); reject(new Error('timeout')); }, 8000);
+    function cleanup() {
+      clearTimeout(timeout);
+      if (script.parentNode) script.parentNode.removeChild(script);
+    }
+    script.onload = () => { cleanup(); resolve(); };
+    script.onerror = () => { cleanup(); reject(new Error('network')); };
+    script.src = url;
+    document.head.appendChild(script);
+  });
+}
+
+async function fetchQuotes(symbols) {
+  const result = {};
+  if (symbols.length === 0) return result;
+  for (const s of symbols) { try { window['v_' + s] = undefined; } catch (e) {} }
+  await loadScript('https://qt.gtimg.cn/q=' + symbols.join(','), 'GBK');
+  for (const s of symbols) {
+    const raw = window['v_' + s];
+    if (!raw || typeof raw !== 'string') continue;
+    const parts = raw.split('~');
+    const price = parseFloat(parts[3]);
+    if (!(price > 0)) continue;
+    result[s] = {
+      name: parts[1] || '',
+      price: price,
+      prevClose: parseFloat(parts[4]) || 0,
+      changePct: parseFloat(parts[32]) || 0,
+    };
+  }
+  return result;
+}
+
+function fmt(n, d) {
+  if (d == null) d = 2;
+  if (!isFinite(n)) return '--';
+  return n.toLocaleString('zh-CN', { minimumFractionDigits: d, maximumFractionDigits: d });
+}
+
+function signed(n, d) { return (n > 0 ? '+' : '') + fmt(n, d); }
+function colorClass(n) { return n > 0 ? 'red' : (n < 0 ? 'green' : ''); }
+
+async function refresh() {
+  const stockSyms = STOCKS.map(s => codeToSym(s.code));
+  const indexSyms = INDICES.map(i => i.sym);
+  let data = {};
+  try { data = await fetchQuotes([...stockSyms, ...indexSyms]); } catch (e) {}
+
+  // 持仓今日盈亏 = Σ (现价 − 昨收) × 持股数
+  let totalPnl = 0;
+  let valid = 0;
+  for (const s of STOCKS) {
+    const d = data[codeToSym(s.code)];
+    if (!d || !d.prevClose) continue;
+    totalPnl += (d.price - d.prevClose) * s.shares;
+    valid++;
+  }
+  const pnlEl = document.getElementById('pnl');
+  if (valid === STOCKS.length) {
+    pnlEl.innerHTML = '<span>' + signed(totalPnl) + '</span><span class="pnl-unit">元</span>';
+    pnlEl.className = 'pnl ' + colorClass(totalPnl);
+  } else if (valid === 0) {
+    pnlEl.textContent = '加载失败';
+    pnlEl.className = 'pnl';
+  } else {
+    pnlEl.innerHTML = '<span>' + signed(totalPnl) + '</span><span class="pnl-unit">元 (部分)</span>';
+    pnlEl.className = 'pnl ' + colorClass(totalPnl);
+  }
+
+  // 三大指数
+  const idxEl = document.getElementById('indices');
+  idxEl.innerHTML = '';
+  for (const idx of INDICES) {
+    const d = data[idx.sym];
+    const row = document.createElement('div');
+    row.className = 'index-row';
+    if (d) {
+      const cls = colorClass(d.changePct);
+      row.innerHTML =
+        '<span class="index-name">' + idx.name + '</span>' +
+        '<span class="index-price ' + cls + '">' + fmt(d.price) + '</span>' +
+        '<span class="index-pct ' + cls + '">' + signed(d.changePct) + '%</span>';
+    } else {
+      row.innerHTML =
+        '<span class="index-name">' + idx.name + '</span>' +
+        '<span class="index-price">--</span>' +
+        '<span class="index-pct">--</span>';
+    }
+    idxEl.appendChild(row);
+  }
+
+  document.getElementById('meta').textContent =
+    '已更新 ' + new Date().toLocaleTimeString('zh-CN', { hour12: false }) +
+    ' · 每 ' + (REFRESH_MS / 1000) + ' 秒自动刷新';
+}
+
+refresh();
+setInterval(refresh, REFRESH_MS);
+</script>
+</body>
+</html>
