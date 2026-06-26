@@ -132,19 +132,42 @@ async function fetchQuotes(symbols) {
 }
 
 async function fetchMinuteData(sym) {
-  const varName = 'min_data_' + sym;
-  try { window[varName] = undefined; } catch (e) {}
+  // 主：腾讯 web JSON 接口
+  const varName = '__min_' + sym.replace(/[^a-z0-9]/gi, '') + '_' + Date.now();
+  try {
+    await loadScript('https://web.ifzq.gtimg.cn/appstock/app/minute/query?code=' + sym + '&_var=' + varName);
+    const obj = window[varName];
+    try { delete window[varName]; } catch (e) { window[varName] = undefined; }
+    if (obj && obj.code === 0 && obj.data && obj.data[sym] && obj.data[sym].data && Array.isArray(obj.data[sym].data.data)) {
+      const points = [];
+      for (const line of obj.data[sym].data.data) {
+        const parts = String(line).split(/\s+/);
+        if (parts.length >= 2 && /^\d{4}$/.test(parts[0])) {
+          const p = parseFloat(parts[1]);
+          if (p > 0) points.push({ time: parts[0], price: p });
+        }
+      }
+      if (points.length > 0) return points;
+    }
+  } catch (e) {}
+
+  // 备：旧版 flashdata
+  const legacyVar = 'min_data_' + sym;
+  try { window[legacyVar] = undefined; } catch (e) {}
   try {
     await loadScript('https://data.gtimg.cn/flashdata/hushen/minute/' + sym + '.js?_=' + Date.now(), 'GBK');
-  } catch (e) { return null; }
-  const raw = window[varName];
-  if (!raw || typeof raw !== 'string') return null;
-  const points = [];
-  for (const line of raw.split(/\\n|\n/)) {
-    const m = line.match(/^(\d{4})\s+([\d.]+)/);
-    if (m) points.push({ time: m[1], price: parseFloat(m[2]) });
-  }
-  return points.length > 0 ? points : null;
+    const raw = window[legacyVar];
+    if (raw && typeof raw === 'string') {
+      const points = [];
+      for (const line of raw.split(/\r?\n/)) {
+        const m = line.match(/^(\d{4})\s+([\d.]+)/);
+        if (m) points.push({ time: m[1], price: parseFloat(m[2]) });
+      }
+      if (points.length > 0) return points;
+    }
+  } catch (e) {}
+
+  return null;
 }
 
 function fmt(n, d) {
@@ -215,18 +238,21 @@ async function refreshSnapshot() {
 
 async function refreshHistory() {
   const minuteData = await Promise.all(STOCKS.map(s => fetchMinuteData(codeToSym(s.code)).catch(() => null)));
-  if (minuteData.some(d => !d)) {
-    if (currentSeries.length === 0) renderChart([]);
+  const failedCodes = minuteData.map((d, i) => d ? null : STOCKS[i].code).filter(Boolean);
+  if (failedCodes.length === STOCKS.length) {
+    if (currentSeries.length === 0) renderChart([], '分钟数据接口无响应（可能是网络受限或非交易日）');
     return;
   }
-  // 拿当前快照里的昨收作为基准（refreshSnapshot 已经填好）
+  if (failedCodes.length > 0) {
+    if (currentSeries.length === 0) renderChart([], '部分股票分钟数据缺失：' + failedCodes.join('、'));
+    return;
+  }
   const prevCloses = STOCKS.map(s => {
     const d = currentSnapshot[codeToSym(s.code)];
     return d ? d.prevClose : 0;
   });
-  if (prevCloses.some(p => !p)) return; // 还没拿到昨收，等下一轮
+  if (prevCloses.some(p => !p)) return;
 
-  // 把每只股票的分钟数据归并到时间轴上
   const priceByTime = minuteData.map(arr => {
     const m = {};
     for (const p of arr) m[p.time] = p.price;
@@ -256,10 +282,11 @@ async function refreshHistory() {
 
 const chartGeom = { W: 600, H: 200, padL: 44, padR: 12, padT: 12, padB: 18 };
 
-function renderChart(series) {
+function renderChart(series, emptyMsg) {
   const svg = document.getElementById('chart');
   if (!series || series.length === 0) {
-    svg.innerHTML = '<text x="300" y="100" text-anchor="middle" fill="#bbb" font-size="13">暂无数据（非交易时段或市场未开盘）</text>';
+    const msg = emptyMsg || '暂无数据（非交易时段或市场未开盘）';
+    svg.innerHTML = '<text x="300" y="100" text-anchor="middle" fill="#bbb" font-size="13">' + msg + '</text>';
     return;
   }
   const { W, H, padL, padR, padT, padB } = chartGeom;
