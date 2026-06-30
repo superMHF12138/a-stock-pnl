@@ -82,7 +82,7 @@
 const STOCKS = [
   { code: '300223', shares: 500 },
   { code: '300456', shares: 3500 },
-  { code: '300475', shares: 800 },
+  { code: '300475', shares: 600 },
 ];
 
 const INDICES = [
@@ -93,7 +93,19 @@ const INDICES = [
 
 const SNAPSHOT_MS = 3000;
 const HISTORY_MS = 30000;
+
+// 当日已实现盈亏调整（仅指定日期生效，过期自动失效，无需手动清理）
+const REALIZED_ADJUST = { date: '2026-06-30', amount: -1400 };
 // =================
+
+function getTodayAdjust() {
+  if (!REALIZED_ADJUST) return 0;
+  const d = new Date();
+  const today = d.getFullYear() + '-' +
+                String(d.getMonth() + 1).padStart(2, '0') + '-' +
+                String(d.getDate()).padStart(2, '0');
+  return REALIZED_ADJUST.date === today ? (REALIZED_ADJUST.amount || 0) : 0;
+}
 
 function codeToSym(code) {
   const f = code[0];
@@ -392,6 +404,7 @@ async function refreshSnapshot() {
     totalPnl += (d.price - d.prevClose) * s.shares;
     valid++;
   }
+  totalPnl += getTodayAdjust();
   const pnlEl = document.getElementById('pnl');
   if (valid === STOCKS.length) {
     pnlEl.innerHTML = '<span>' + signed(totalPnl) + '</span><span class="pnl-unit">元</span>';
@@ -450,6 +463,7 @@ async function refreshHistory() {
 
       const lastPrice = STOCKS.map(() => null);
       const series = [];
+      const adjust = getTodayAdjust();
       for (const t of sortedTimes) {
         for (let i = 0; i < STOCKS.length; i++) {
           if (priceByTime[i][t] != null) lastPrice[i] = priceByTime[i][t];
@@ -459,7 +473,7 @@ async function refreshHistory() {
           for (let i = 0; i < STOCKS.length; i++) {
             pnl += (lastPrice[i] - prevCloses[i]) * STOCKS[i].shares;
           }
-          series.push({ time: t, value: pnl });
+          series.push({ time: t, value: pnl + adjust });
         }
       }
       portfolioChart && portfolioChart.render(series);
